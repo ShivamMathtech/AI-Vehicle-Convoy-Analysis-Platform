@@ -1,0 +1,104 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vehicle Convoy Analysis Platform</title>
+<style>
+:root{--bg:#070b14;--pn:#0d1424;--ln:#1c2840;--tx:#e6ecf8;--mu:#8b99b5;--ac:#2563eb;--ok:#22c55e;--ar:16/9}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px system-ui,sans-serif}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--ln)}
+h1{font-size:20px;margin:0}h2{font-size:14px;margin:0 0 8px}.mu{color:var(--mu)}.ok{color:var(--ok)}
+.wrap{display:grid;grid-template-columns:160px 1fr}
+nav{border-right:1px solid var(--ln);padding:12px;display:flex;flex-direction:column;gap:4px}
+nav span{padding:10px;border-radius:6px;color:var(--mu)}nav .on{background:var(--ac);color:#fff}
+main{display:grid;gap:12px;padding:12px;grid-template-columns:repeat(4,minmax(0,1fr))}
+.card{background:var(--pn);border:1px solid var(--ln);border-radius:8px;padding:10px;min-width:0}
+.w2{grid-column:span 2}
+.stage{position:relative;aspect-ratio:var(--ar);background:#000}
+.stage video,.stage canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.stage video{pointer-events:auto}
+canvas.f{width:100%;display:block;background:#05080f}
+.row{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--ln)}
+table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:4px 2px;border-bottom:1px solid var(--ln)}th{color:var(--mu);font-weight:500}
+select,button,input[type=file]{width:100%;margin:4px 0;padding:8px;background:#111b30;color:var(--tx);border:1px solid var(--ln);border-radius:6px;font:inherit}
+button.p{background:var(--ac);border-color:var(--ac);cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}
+progress{width:100%}:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}
+@media(max-width:1100px){main{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:700px){main{grid-template-columns:1fr}.w2{grid-column:auto}.wrap{grid-template-columns:1fr}nav{display:none}}
+</style></head><body>
+<header><div><h1>Vehicle Convoy Analysis Platform</h1><span class="mu">Detection, segmentation, tracking and group analysis of supplied video</span></div>
+<div class="mu"><span class="ok" id="sys">Connecting…</span> &nbsp; <span id="clk"></span></div></header>
+<div class="wrap"><nav aria-label="Sections"><span class="on">Dashboard</span><span title="Planned">Live Feed</span><span title="Planned">Datasets</span><span title="Planned">Models</span><span title="Planned">Settings</span></nav>
+<main>
+<section class="card w2"><h2>Input feed <small class="mu" id="fname"></small>
+<label class="mu" style="float:right"><input type="checkbox" id="tb" checked> Boxes</label>
+<label class="mu" style="float:right;margin-right:10px"><input type="checkbox" id="tm" checked> Masks</label>
+<label class="mu" style="float:right;margin-right:10px"><input type="checkbox" id="tt" checked> Trails</label></h2>
+<div class="stage"><video id="vid" controls muted aria-label="Input video"></video><canvas id="ov" aria-label="Detection overlay"></canvas></div></section>
+<section class="card"><h2>Segmentation output</h2><div class="stage"><canvas id="seg" aria-label="Segmentation masks"></canvas></div></section>
+<section style="display:grid;gap:12px;align-content:start">
+<div class="card"><h2>Detected objects <span class="mu" id="n">0</span></h2><div id="objs"><span class="mu">Upload a video and run analysis.</span></div></div>
+<div class="card"><h2>Vehicle group status</h2><div id="cv"><span class="mu">No analysis yet.</span></div></div></section>
+<section class="card"><h2>Analysis results</h2><table><thead><tr><th>ID</th><th>Class</th><th>Conf</th><th>Area px</th><th>x, y</th></tr></thead><tbody id="tbl"></tbody></table></section>
+<section class="card"><h2>Object tracking (trajectory)</h2><canvas id="tr" class="f" aria-label="Trajectories"></canvas></section>
+<section class="card"><h2>Mean confidence per class</h2><canvas id="ch" class="f" width="420" height="260" aria-label="Confidence graph"></canvas></section>
+<section class="card"><h2>Controls</h2>
+<label class="mu" for="model">Model</label><select id="model"></select>
+<label class="mu" for="file">Input video</label><input type="file" id="file" accept="video/*">
+<div class="mu">Analysis mode</div>
+<label><input type="radio" name="mode" value="detection"> Detection only</label><br>
+<label><input type="radio" name="mode" value="detection+segmentation" checked> Detection + segmentation</label>
+<button class="p" id="run" disabled>Run analysis</button><button id="stop">Stop</button>
+<progress id="bar" max="1" value="0"></progress><div class="mu" id="msg" role="status"></div></section>
+</main></div>
+<script>
+const $=id=>document.getElementById(id);
+const COL={car:"#3b82f6",truck:"#ef4444",bus:"#22c55e",motorcycle:"#f59e0b"},col=c=>COL[c]||"#a78bfa";
+let up=null,R=null,byF=new Map(),trk={},ser={},last=-1,jobId=null;
+const msg=t=>$("msg").textContent=t;
+async function api(p,o){const r=await fetch("/api/v1"+p,o);if(!r.ok){let m=r.statusText;try{m=(await r.json()).detail||m}catch{}throw new Error(typeof m==="string"?m:JSON.stringify(m))}return r.json()}
+api("/system").then(s=>{$("sys").textContent="System online · "+s.device;$("model").innerHTML=s.models.map(m=>`<option>${m}</option>`).join("")}).catch(()=>{$("sys").textContent="Backend offline";$("sys").className="mu"});
+setInterval(()=>$("clk").textContent=new Date().toLocaleString(),1000);
+document.querySelectorAll("[type=checkbox]").forEach(e=>e.onchange=()=>last=-1);
+$("file").onchange=async e=>{const f=e.target.files[0];if(!f)return;msg("Uploading…");R=null;last=-1;
+ try{const fd=new FormData();fd.append("file",f);up=await api("/upload",{method:"POST",body:fd});
+  $("vid").src="/api/v1/video/"+up.upload_id;document.documentElement.style.setProperty("--ar",`${up.width}/${up.height}`);
+  $("fname").textContent=f.name;msg(`${up.width}×${up.height} · ${up.fps.toFixed(1)} fps · ${up.frames} frames`);$("run").disabled=false}
+ catch(x){msg("Upload failed: "+x.message)}};
+$("stop").onclick=()=>jobId&&api(`/analysis/${jobId}/stop`,{method:"POST"}).catch(x=>msg(x.message));
+$("run").onclick=async()=>{try{
+ const j=await api("/analysis/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({upload_id:up.upload_id,model:$("model").value,mode:document.querySelector("[name=mode]:checked").value})});
+ jobId=j.id;$("run").disabled=true;
+ const t=setInterval(async()=>{try{const s=await api("/analysis/"+j.id);$("bar").value=s.progress;
+  msg(`${s.status} · ${(s.progress*100).toFixed(0)}% · ${s.fps.toFixed(1)} fps${s.error?" · "+s.error:""}`);
+  if(["completed","failed","cancelled"].includes(s.status)){clearInterval(t);$("run").disabled=false;if(s.status!=="failed")load(j.id)}}
+  catch(x){clearInterval(t);msg(x.message);$("run").disabled=false}},1000)}catch(x){msg(x.message)}};
+async function load(id){R=await api(`/analysis/${id}/result`);byF=new Map(R.frames.map(f=>[f.frame_id,f]));trk={};ser={};
+ R.frames.forEach((f,n)=>{const by={};f.detections.forEach(d=>{(trk[d.track_id]??=[]).push([f.frame_id,d.centroid[0],d.centroid[1]]);(by[d.class_name]??=[]).push(d.conf)});
+  for(const k in by)(ser[k]??=[]).push([n,by[k].reduce((a,b)=>a+b)/by[k].length])});
+ last=-1;msg(`Done · ${R.frames.length} frames analysed · ${R.groups.length} persistent group(s) · play the video to inspect`)}
+function fit(c){const w=Math.round(c.getBoundingClientRect().width);if(c.width!==w){c.width=w;c.height=Math.round(w*R.meta.height/R.meta.width)}return c.width/R.meta.width}
+const hex=(c,a)=>c+Math.round(a*255).toString(16).padStart(2,"0");
+function poly(x,d,s,f){x.beginPath();d.mask.forEach(([a,b],k)=>k?x.lineTo(a*s,b*s):x.moveTo(a*s,b*s));x.closePath();x.fillStyle=f;x.fill()}
+function trail(x,id,i,s,k,win){const p=trk[id].filter(q=>q[0]<=i&&q[0]>i-win);x.strokeStyle=k;x.beginPath();p.forEach((q,n)=>n?x.lineTo(q[1]*s,q[2]*s):x.moveTo(q[1]*s,q[2]*s));x.stroke()}
+function chart(i){const cv=$("ch"),x=cv.getContext("2d"),W=cv.width,H=cv.height,N=R.frames.length||1;x.clearRect(0,0,W,H);x.lineWidth=1.5;x.font="11px system-ui";
+ [0,.5,1].forEach(v=>{const y=H-20-v*(H-30);x.strokeStyle="#1c2840";x.beginPath();x.moveTo(30,y);x.lineTo(W,y);x.stroke();x.fillStyle="#8b99b5";x.fillText(v,2,y+4)});
+ for(const k in ser){x.strokeStyle=col(k);x.beginPath();ser[k].forEach(([n,v],j)=>{const px=30+n/N*(W-34),py=H-20-v*(H-30);j?x.lineTo(px,py):x.moveTo(px,py)});x.stroke()}
+ const px=30+Math.floor(i/R.meta.stride)/N*(W-34);x.strokeStyle="#fff";x.beginPath();x.moveTo(px,0);x.lineTo(px,H-20);x.stroke()}
+function tick(){requestAnimationFrame(tick);if(!R)return;
+ const i=Math.round($("vid").currentTime*R.meta.fps);if(i===last)return;last=i;
+ const r=byF.get(Math.floor(i/R.meta.stride)*R.meta.stride);if(!r)return;
+ let cv=$("ov"),s=fit(cv),x=cv.getContext("2d");x.clearRect(0,0,cv.width,cv.height);x.lineWidth=2;x.font="12px system-ui";
+ r.detections.forEach(d=>{const k=col(d.class_name);
+  if($("tm").checked&&d.mask)poly(x,d,s,hex(k,.35));
+  if($("tb").checked){const[a,b,c,e]=d.bbox,t=`${d.class_name} ${d.conf.toFixed(2)} #${d.track_id}`;x.strokeStyle=k;x.strokeRect(a*s,b*s,(c-a)*s,(e-b)*s);x.fillStyle=k;x.fillRect(a*s,b*s-16,x.measureText(t).width+8,16);x.fillStyle="#fff";x.fillText(t,a*s+4,b*s-4)}
+  if($("tt").checked)trail(x,d.track_id,i,s,k,R.meta.stride*60)});
+ cv=$("seg");s=fit(cv);x=cv.getContext("2d");x.fillStyle="#05080f";x.fillRect(0,0,cv.width,cv.height);
+ r.detections.forEach(d=>d.mask&&poly(x,d,s,hex(col(d.class_name),.9)));
+ cv=$("tr");s=fit(cv);x=cv.getContext("2d");x.fillStyle="#05080f";x.fillRect(0,0,cv.width,cv.height);x.lineWidth=1.5;
+ Object.keys(trk).forEach(id=>trail(x,id,i,s,"#64748b",Infinity));
+ r.detections.forEach(d=>{x.fillStyle=col(d.class_name);x.beginPath();x.arc(d.centroid[0]*s,d.centroid[1]*s,4,0,7);x.fill()});
+ const by={};r.detections.forEach(d=>(by[d.class_name]??=[]).push(d.conf));$("n").textContent=r.detections.length;
+ $("objs").innerHTML=Object.entries(by).map(([k,v])=>`<div class="row"><b style="color:${col(k)}">${k}</b><span>Count ${v.length}</span><span>Avg conf ${(v.reduce((a,b)=>a+b)/v.length).toFixed(2)}</span></div>`).join("")||'<span class="mu">No objects in this frame</span>';
+ const g=r.groups.find(g=>g.confirmed),S=g&&R.groups.find(q=>q.group_id===g.group_id);
+ $("cv").innerHTML=g?`<b class="ok">Persistent vehicle group</b><div>Vehicles in frame: ${g.members.length} · spacing ${g.spacing}px</div><div>Direction (image-plane): ${g.direction}</div><div>Group confidence: ${S?S.group_confidence:"n/a"}</div>`:'<span class="mu">No persistent group in this frame</span>';
+ $("tbl").innerHTML=r.detections.map(d=>`<tr><td>${d.track_id}</td><td>${d.class_name}</td><td>${d.conf.toFixed(2)}</td><td>${Math.round(d.mask_area||d.area)}</td><td>${d.centroid.map(Math.round).join(", ")}</td></tr>`).join("");
+ chart(i)}
+tick();
+</script></body></html>
